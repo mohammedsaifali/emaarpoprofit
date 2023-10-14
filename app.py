@@ -1,70 +1,77 @@
 import streamlit as st
 import pandas as pd
-import io
 
-# Define functions for data processing
-def re_aggregate_sales_profitability(df):
-    return df.groupby(['InvNo', 'BillTo']).agg({
+# Define a function to aggregate AmountAfterTax and PurchaseAmount based on a list of invoice numbers
+def aggregate_values_based_on_invoices(df, invoice_list):
+    # Filter the DataFrame based on the given list of invoice numbers
+    filtered_df = df[df['InvNo'].isin(invoice_list)]
+    return pd.Series({
+        'AmountAfterTax_Sum': filtered_df['AmountAfterTax'].sum(),
+        'PurchaseAmount_Sum': filtered_df['PurchaseAmount'].sum()
+    })
+
+# Define a function to fetch the unique 'BillTo' based on a list of invoice numbers
+def fetch_billto_based_on_invoices(df, invoice_list):
+    # Filter the DataFrame based on the given list of invoice numbers
+    filtered_df = df[df['InvNo'].isin(invoice_list)]
+    return filtered_df['BillTo'].unique()[0] if not filtered_df.empty else None
+
+# Function to process sales data
+def process_sales_data(sales_register_file, sales_profitability_file):
+    # Load Sales Register and Sales Profitability data
+    sales_register_df = pd.read_excel(sales_register_file, skiprows=3)
+    sales_profitability_df = pd.read_excel(sales_profitability_file, skiprows=3)
+
+    re_aggregated_sales_profitability_df = sales_profitability_df.groupby(['InvNo', 'BillTo']).agg({
         'AmountAfterTax': 'sum',
         'PurchaseAmount': 'sum'
     }).reset_index()
 
-def aggregate_invoice_list(df):
-    aggregated_df = df.groupby('PONo').agg({
+    # Aggregate DocNo (invoice numbers) as a list for each PONo
+    aggregated_invoice_list_df = sales_register_df.groupby('PONo').agg({
         'DocNo': lambda x: ', '.join(map(str, x.unique()))
     }).reset_index()
-    aggregated_df.columns = ['PONo', 'InvoiceNos_List']
-    return aggregated_df
+    
+    # Rename columns for clarity
+    aggregated_invoice_list_df.columns = ['PONo', 'InvoiceNos_List']
 
-def calculate_profit(invoice_list, sales_profitability_df):
-    filtered_df = sales_profitability_df[sales_profitability_df['InvNo'].isin(invoice_list.split(', '))]
-    if not filtered_df.empty:
-        return filtered_df['AmountAfterTax'].sum() - filtered_df['PurchaseAmount'].sum()
-    return None
+    aggregated_values_df = aggregated_invoice_list_df.copy()
+    aggregated_values_df['InvoiceNos_List'] = aggregated_values_df['InvoiceNos_List'].str.split(', ')
+    aggregated_values_df = aggregated_values_df.join(aggregated_values_df['InvoiceNos_List'].apply(
+        lambda x: aggregate_values_based_on_invoices(re_aggregated_sales_profitability_df, x)
+    ))
 
-def fetch_billto(invoice_list, sales_profitability_df):
-    filtered_df = sales_profitability_df[sales_profitability_df['InvNo'].isin(invoice_list.split(', '))]
-    return filtered_df['BillTo'].unique()[0] if not filtered_df.empty else None
-
-# Streamlit UI
-st.title("Emaar PO Profitability Generator")
-
-# Upload Excel files
-st.sidebar.header("Upload Excel Files")
-sales_register_file = st.sidebar.file_uploader("Upload Sales Register Excel File", type=["xls", "xlsx"])
-sales_profitability_file = st.sidebar.file_uploader("Upload Sales Profitability Excel File", type=["xls", "xlsx"])
-
-if sales_register_file is not None and sales_profitability_file is not None:
-    # Data processing
-    sales_register_df = pd.read_excel(sales_register_file, skiprows=3)
-    sales_profitability_df = pd.read_excel(sales_profitability_file, skiprows=3)
-
-    re_aggregated_df = re_aggregate_sales_profitability(sales_profitability_df)
-    aggregated_invoice_list_df = aggregate_invoice_list(sales_register_df)
-
-    aggregated_invoice_list_df['Profit'] = aggregated_invoice_list_df['InvoiceNos_List'].apply(
-        lambda x: calculate_profit(x, re_aggregated_df))
-    aggregated_invoice_list_df['BillTo'] = aggregated_invoice_list_df['InvoiceNos_List'].apply(
-        lambda x: fetch_billto(x, re_aggregated_df))
-
-    # Output as Excel
-    st.subheader("Resulting Data")
-    st.write(aggregated_invoice_list_df)
-
-    output_filename = "output_result.xlsx"
-
-    # Custom function for downloading Excel
-    def download_excel():
-        output_buffer = io.BytesIO()
-        with pd.ExcelWriter(output_buffer, engine="xlsxwriter") as writer:
-            aggregated_invoice_list_df.to_excel(writer, sheet_name="Sheet1", index=False)
-        output_buffer.seek(0)
-        return output_buffer
-
-    excel_data = download_excel()
-    st.sidebar.download_button(
-        label="Download Result as Excel",
-        data=excel_data,
-        key=output_filename,
-        file_name=output_filename,
+    # Fetch the 'BillTo' for each list of invoice numbers
+    aggregated_values_df['BillTo'] = aggregated_values_df['InvoiceNos_List'].apply(
+        lambda x: fetch_billto_based_on_invoices(re_aggregated_sales_profitability_df, x)
     )
+
+    # Calculate Profit column as AmountAfterTax_Sum - PurchaseAmount_Sum
+    aggregated_values_df['Profit'] = aggregated_values_df['AmountAfterTax_Sum'] - aggregated_values_df['PurchaseAmount_Sum']
+
+    return aggregated_values_df
+
+# Streamlit app
+def main():
+    st.title("Emaar PO Profit Generator App")
+
+    # File upload widgets
+    st.sidebar.header("Upload Files")
+    sales_register_file = st.sidebar.file_uploader("Upload Sales Register Excel File", type=["xls", "xlsx"])
+    sales_profitability_file = st.sidebar.file_uploader("Upload Sales Profitability Excel File", type=["xls", "xlsx"])
+
+    if sales_register_file and sales_profitability_file:
+        if st.sidebar.button("Process Data"):
+            st.sidebar.text("Processing data...")
+
+            # Process the data
+            processed_data_df = process_sales_data(sales_register_file, sales_profitability_file)
+
+            st.sidebar.text("Data processing complete!")
+
+            # Display the processed data in the app
+            st.header("Processed Data")
+            st.dataframe(processed_data_df)
+
+if __name__ == "__main__":
+    main()
